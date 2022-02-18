@@ -2,145 +2,17 @@
 # Copyright (c) 2002-2008 ActiveState Software Inc.
 # License: MIT License (http://www.opensource.org/licenses/mit-license.php)
 
-"""
-    Preprocess a file.
+# This is modified to deal with C project, with preprocess command not in comment.
+# Options are removed.
+# The output is for call tree analysis, not to be built.
+# How to use:
+#  Set the variable workplace, and run this file.
 
-    Command Line Usage:
-        preprocess [<options>...] <infile>
-
-    Options:
-        -h, --help      Print this help and exit.
-        -V, --version   Print the version info and exit.
-        -v, --verbose   Give verbose output for errors.
-
-        -o <outfile>    Write output to the given file instead of to stdout.
-        -f, --force     Overwrite given output file. (Otherwise an IOError
-                        will be raised if <outfile> already exists.
-        -D <define>     Define a variable for preprocessing. <define>
-                        can simply be a variable name (in which case it
-                        will be true) or it can be of the form
-                        <var>=<val>. An attempt will be made to convert
-                        <val> to an integer so "-D FOO=0" will create a
-                        false value.
-        -I <dir>        Add an directory to the include path for
-                        #include directives.
-
-        -k, --keep-lines    Emit empty lines for preprocessor statement
-                        lines and skipped output lines. This allows line
-                        numbers to stay constant.
-        -s, --substitute    Substitute defines into emitted lines. By
-                        default substitution is NOT done because it
-                        currently will substitute into everything, e.g.,
-                        program strings.
-        -c, --content-types-path <path>
-                        Specify a path to a content.types file to assist
-                        with filetype determination. See the
-                        `_gDefaultContentTypes` string in this file for
-                        details on its format.
-
-    Module Usage:
-        from preprocess import preprocess
-        preprocess(infile, outfile=sys.stdout, defines={}, force=0,
-                   keepLines=0, includePath=[], substitute=0,
-                   contentType=None)
-
-    The <infile> can be marked up with special preprocessor statement lines
-    of the form:
-        <comment-prefix> <preprocessor-statement> <comment-suffix>
-    where the <comment-prefix/suffix> are the native comment delimiters for
-    that file type.
-
-
-    Examples
-    --------
-
-    HTML (*.htm, *.html) or XML (*.xml, *.kpf, *.xul) files:
-
-        <!-- #if FOO -->
-        ...
-        <!-- #endif -->
-
-    Python (*.py), Perl (*.pl), Tcl (*.tcl), Ruby (*.rb), Bash (*.sh),
-    or make ([Mm]akefile*) files:
-
-        # #if defined('FAV_COLOR') and FAV_COLOR == "blue"
-        ...
-        # #elif FAV_COLOR == "red"
-        ...
-        # #else
-        ...
-        # #endif
-
-    C (*.c, *.h), C++ (*.cpp, *.cxx, *.cc, *.h, *.hpp, *.hxx, *.hh),
-    Java (*.java), PHP (*.php) or C# (*.cs) files:
-
-        // #define FAV_COLOR 'blue'
-        ...
-        /* #ifndef FAV_COLOR */
-        ...
-        // #endif
-
-    Fortran 77 (*.f) or 90/95 (*.f90) files:
-
-        C     #if COEFF == 'var'
-              ...
-        C     #endif
-
-    And other languages.
-
-
-    Preprocessor Syntax
-    -------------------
-
-    - Valid statements:
-        #define <var> [<value>]
-        #undef <var>
-        #ifdef <var>
-        #ifndef <var>
-        #if <expr>
-        #elif <expr>
-        #else
-        #endif
-        #error <error string>
-        #include "<file>"
-        #include "<file>" fromto: from-regex@to-regex
-        #include "<file>" fromto_: from-regex@to-regex
-        #include <var>
-      where <expr> is any valid Python expression.
-
-    - About #include with from/to regex: fromto: means that the line
-      with to-regex is not inclued, while fromto_: means that it is
-      included. Note that from-regex and to-regex must be valid
-      regular expressions. The to-regex can be left out (but the
-      @ delimiter must be kept), meaning that everything from from-regex
-      to the end of the file is included.
-
-    - The expression after #if/elif may be a Python statement. It is an
-      error to refer to a variable that has not been defined by a -D
-      option or by an in-content #define.
-
-    - Special built-in methods for expressions:
-        defined(varName)    Return true if given variable is defined.
-
-
-    Tips
-    ----
-
-    A suggested file naming convention is to let input files to
-    preprocess be of the form <basename>.p.<ext> and direct the output
-    of preprocess to <basename>.<ext>, e.g.:
-        preprocess -o foo.py foo.p.py
-    The advantage is that other tools (esp. editors) will still
-    recognize the unpreprocessed file as the original language.
-"""
 from past.builtins import cmp
 from builtins import map
 from builtins import str
 from builtins import range
 from builtins import object
-
-__version_info__ = (1, 2, 2)
-__version__ = '.'.join(map(str, __version_info__))
 
 import os
 import sys
@@ -148,10 +20,6 @@ import getopt
 import types
 import re
 import pprint
-
-
-
-#---- exceptions
 
 class PreprocessError(Exception):
     def __init__(self, errmsg, file=None, lineno=None, line=None):
@@ -172,40 +40,6 @@ class PreprocessError(Exception):
         #if self.line is not None:
         #    s += ": " + self.line
         return s
-
-
-
-#---- global data
-
-# Comment delimiter info.
-#   A mapping of content type to a list of 2-tuples defining the line
-#   prefix and suffix for a comment. Each prefix or suffix can either
-#   be a string (in which case it is transformed into a pattern allowing
-#   whitespace on either side) or a compiled regex.
-_commentGroups = {
-    "Python":     [ ('#', '') ],
-    "Perl":       [ ('#', '') ],
-    "PHP":        [ ('/*', '*/'), ('//', ''), ('#', '') ],
-    "Ruby":       [ ('#', '') ],
-    "Tcl":        [ ('#', '') ],
-    "Shell":      [ ('#', '') ],
-    # Allowing for CSS and JavaScript comments in XML/HTML.
-    "XML":        [ ('<!--', '-->'), ('/*', '*/'), ('//', '') ],
-    "HTML":       [ ('<!--', '-->'), ('/*', '*/'), ('//', '') ],
-    "Makefile":   [ ('#', '') ],
-    "JavaScript": [ ('/*', '*/'), ('//', '') ],
-    "CSS":        [ ('/*', '*/') ],
-    "C":          [ ('/*', '*/') ],
-    "C++":        [ ('/*', '*/'), ('//', '') ],
-    "Java":       [ ('/*', '*/'), ('//', '') ],
-    "C#":         [ ('/*', '*/'), ('//', '') ],
-    "IDL":        [ ('/*', '*/'), ('//', '') ],
-    "Text":       [ ('#', '') ],
-    "Fortran":    [ (re.compile(r'^[a-zA-Z*$]\s*'), ''), ('!', '') ],
-    "TeX":        [ ('%', '') ],
-}
-
-
 
 #---- internal logging facility
 
@@ -270,73 +104,42 @@ log = _Logger("preprocess", _Logger.WARN)
 
 
 #---- internal support stuff
+# This function is especially modified to eval directly C language.
 
 def _evaluate(expr, defines):
     """Evaluate the given expression string with the given context.
-
     WARNING: This runs eval() on a user string. This is unsafe.
     """
     #interpolated = _interpolate(s, defines)
+    expr = expr.replace("||","|") # Replace logic operators.
+    expr = expr.replace("&&","&")
+    expr = expr.replace("!defined", "ndefined") # Deal with !.
+    expr = expr.replace("! defined", "ndefined")
+    expr = re.sub("(\s*/\*.*\*/\s*)","",expr) # Get rid of comment
+    
+    # Add '' around the variable.(This may solve the problem for the original project too?)
+    rule = re.compile("defined\s*[(]\s*([a-zA-Z_]+[a-zA-Z0-9_]*)\s*[)]")
+    match = rule.search(expr)
+    if match:
+        expr = re.sub(rule,"defined ( '\g<1>' )",expr)
+    
     try:
-        rv = eval(expr, {'defined':lambda v: v in defines}, defines)
+        rv = eval(expr, {'defined':lambda v: v in defines,'ndefined':lambda v: v not in defines}, defines)
     except Exception as ex:
         msg = str(ex)
-        if msg.startswith("name '") and msg.endswith("' is not defined"):
-            # A common error (at least this is presumed:) is to have
-            #   defined(FOO)   instead of   defined('FOO')
-            # We should give a little as to what might be wrong.
-            # msg == "name 'FOO' is not defined"  -->  varName == "FOO"
-            varName = msg[len("name '"):-len("' is not defined")]
-            if expr.find("defined(%s)" % varName) != -1:
-                # "defined(FOO)" in expr instead of "defined('FOO')"
-                msg += " (perhaps you want \"defined('%s')\" instead of "\
-                       "\"defined(%s)\")" % (varName, varName)
-        elif msg.startswith("invalid syntax"):
-            msg = "invalid syntax: '%s'" % expr
-        raise PreprocessError(msg, defines['__FILE__'], defines['__LINE__'])
+        print(expr, msg)
+        sys.exit()
     log.debug("evaluate %r -> %s (defines=%r)", expr, rv, defines)
     return rv
 
 
 #---- module API
 
-def preprocess(infile, outfile=sys.stdout, defines={},
+def preprocess(workspace, infile, outfile=sys.stdout, defines={},
                force=0, keepLines=0, includePath=[],
                substitute=0, include_substitute=0,
                contentType=None, contentTypesRegistry=None,
                __preprocessedFiles=None):
-    """Preprocess the given file.
-
-    "infile" is the input path, either a string (the whole file),
-        or a tuple (filename, from_, to_, last_to_line) that defines
-        the lines in filename from from_ to to_, but not include to_
-        if last_to_line is False. from_ and to_ are treated as
-        regular expressions.
-    "outfile" is the output path or stream (default is sys.stdout).
-    "defines" is a dictionary of defined variables that will be
-        understood in preprocessor statements. Keys must be strings and,
-        currently, only the truth value of any key's value matters.
-    "force" will overwrite the given outfile if it already exists. Otherwise
-        an IOError will be raise if the outfile already exists.
-    "keepLines" will cause blank lines to be emitted for preprocessor lines
-        and content lines that would otherwise be skipped.
-    "includePath" is a list of directories to search for given #include
-        directives. The directory of the file being processed is presumed.
-    "substitute", if true, will allow substitution of defines into emitted
-        lines. (NOTE: This substitution will happen to anything, e.g.,
-        within program strings, and this may not be what you expect!)
-    "include_substitute", if true, will allow substitution of defines into
-        #include statements.
-    "contentType" can be used to specify the content type of the input
-        file. It not given, it will be guessed.
-    "contentTypesRegistry" is an instance of ContentTypesRegistry. If not specified
-        a default registry will be created.
-    "__preprocessedFiles" (for internal use only) is used to ensure files
-        are not recusively preprocessed.
-
-    Returns the modified dictionary of defines or raises PreprocessError if
-    there was some problem.
-    """
     if isinstance(infile, tuple):
         infile, from_, to_, last_to_line = infile
     else:
@@ -359,56 +162,20 @@ def preprocess(infile, outfile=sys.stdout, defines={},
 
     # Determine the content type and comment info for the input file.
     if contentType is None:
-        registry = contentTypesRegistry or getDefaultContentTypesRegistry()
-        contentType = registry.getContentType(infile)
-        if contentType is None:
-            contentType = "Text"
-            log.warn("defaulting content type for '%s' to '%s'",
-                     infile, contentType)
-    try:
-        cgs = _commentGroups[contentType]
-    except KeyError:
-        raise PreprocessError("don't know comment delimiters for content "\
-                              "type '%s' (file '%s')"\
-                              % (contentType, infile))
+        contentType = "C++"
 
-    # Generate statement parsing regexes. Basic format:
-    #       <comment-prefix> <preprocessor-stmt> <comment-suffix>
-    #  Examples:
-    #       <!-- #if foo -->
-    #       ...
-    #       <!-- #endif -->
-    #
-    #       # #if BAR
-    #       ...
-    #       # #else
-    #       ...
-    #       # #endif
-    stmts = ['#\s*(?P<op>if|elif|ifdef|ifndef)\s+(?P<expr>.*?)',
-             '#\s*(?P<op>else|endif)',
-             '#\s*(?P<op>error)\s+(?P<error>.*?)',
-             '#\s*(?P<op>define)\s+(?P<var>[^\s]*?)(\s+(?P<val>.+?))?',
-             '#\s*(?P<op>undef)\s+(?P<var>[^\s]*?)',
-             '#\s*(?P<op>include) +"(?P<fname>.*?)" +(?P<fromto>fromto_?):\s+(?P<part>.+\n)',
-             '#\s*(?P<op>include)\s+"(?P<fname>.*?)"',
-             r'#\s*(?P<op>include)\s+(?P<var>[^\s]+?)',
+    # Patterns are modified to fit my own use.
+    # No need for comment patterns according to file type so removed.
+    stmts = ['\s*#\s*(?P<op>if|elif|ifdef|ifndef)\s+(?P<expr>.*)$',
+             '\s*#\s*(?P<op>else|endif)(\s*/\*.*\*/\s*)?\s*$',
+             '\s*#\s*(?P<op>error)\s+(?P<error>.*?)(\s*/\*.*\*/\s*)?$',
+             '\s*#\s*(?P<op>define)\s+(?P<var>[\S]*)\s*[( ]?(\s?(?P<val>\S+))?[ )]?\s*(/*.*)?(\s*/\*.*\*/\s*)?$',
+             '\s*#\s*(?P<op>undef)\s+(?P<var>[\S]*?)',
+             '\s*#\s*(?P<op>include) +"(?P<fname>.*?)" +(?P<fromto>fromto_?):\s+(?P<part>.+\n)',
+             '\s*#\s*(?P<op>include)\s+"(?P<fname>.*?)"',
+             r'\s*#\s*(?P<op>include)\s+(?P<var>[\S]+?)',
             ]
-    patterns = []
-    for stmt in stmts:
-        # The comment group prefix and suffix can either be just a
-        # string or a compiled regex.
-        for cprefix, csuffix in cgs:
-            if hasattr(cprefix, "pattern"):
-                pattern = cprefix.pattern
-            else:
-                pattern = r"^\s*%s\s*" % re.escape(cprefix)
-            pattern += stmt
-            if hasattr(csuffix, "pattern"):
-                pattern += csuffix.pattern
-            else:
-                pattern += r"\s*%s\s*$" % re.escape(csuffix)
-            patterns.append(pattern)
-    stmtRes = [re.compile(p) for p in patterns]
+    stmtRes = [re.compile(p) for p in stmts]
 
     # Process the input file.
     # (Would be helpful if I knew anything about lexing and parsing
@@ -451,6 +218,12 @@ def preprocess(infile, outfile=sys.stdout, defines={},
         log.debug("line %d: %r", lineNum, line)
         defines['__LINE__'] = lineNum
 
+        # Get rid of the 'u' after numbers meaning unsigned.
+        popu = re.compile("([0-9])u")
+        pop = popu.search(line)
+        if pop:
+            line = re.sub(popu,"\g<1>",line)
+
         # Is this line a preprocessor stmt line?
         #XXX Could probably speed this up by optimizing common case of
         #    line NOT being a preprocessor stmt line.
@@ -474,7 +247,13 @@ def preprocess(infile, outfile=sys.stdout, defines={},
                             val = eval(val, {}, {})
                         except:
                             pass
-                    defines[var] = val
+                    if val in defines:
+                        defines[var] = defines[val] # Deal with assigning a value already exist as key(exp. #define VAR1 1 and then #define VAR2 VAR1)
+                    else:
+                        try:
+                            defines[var] = eval(val) # Deal with value that still need calculation or hex numbers.(exp. #define VAR 2*2 or #define VAR 0x01)
+                        except:
+                            defines[var] = val
             elif op == "undef":
                 if not (states and states[-1][0] == SKIP):
                     var = match.group("var")
@@ -512,17 +291,17 @@ def preprocess(infile, outfile=sys.stdout, defines={},
                             value = defines[name]
                             f = f.replace(name, str(value))
 
-                    for d in [os.path.dirname(infile)] + includePath:
-                        fname = os.path.normpath(os.path.join(d, f))
+                    for root,di,file in os.walk(workspace):
+                        fname = os.path.normpath(os.path.join(root, f))
                         if os.path.exists(fname):
                             break
-                        else:
-                            raise PreprocessError("could not find #include'd file "\
-                                                  "\"%s\" on include path: %r"\
-                                                  % (f, includePath))
+                    else:
+                        raise PreprocessError("could not find #include'd file "\
+                                              "\"%s\" on include path: %r"\
+                                              % (f, includePath))
                     if fromto is not None:
                         fname = (fname, from_, to_, last_to_line)
-                    defines = preprocess(fname, fout, defines, force,
+                    defines = preprocess(workspace, fname, fout, defines, force,
                                          keepLines, includePath,
                                          substitute, include_substitute,
                                          contentTypesRegistry=contentTypesRegistry,
@@ -538,10 +317,12 @@ def preprocess(infile, outfile=sys.stdout, defines={},
                     if states and states[-1][0] == SKIP:
                         # Were are nested in a SKIP-portion of an if-block.
                         states.append((SKIP, 0, 0))
-                    elif _evaluate(expr, defines):
-                        states.append((EMIT, 1, 0))
                     else:
-                        states.append((SKIP, 0, 0))
+                        bol = _evaluate(expr, defines)
+                        if bol:
+                            states.append((EMIT, 1, 0))
+                        else:
+                            states.append((SKIP, 0, 0))
                 except KeyError:
                     raise PreprocessError("use of undefined variable in "\
                                           "#%s stmt" % op, defines['__FILE__'],
@@ -558,10 +339,12 @@ def preprocess(infile, outfile=sys.stdout, defines={},
                     elif states[:-1] and states[-2][0] == SKIP:
                         # Were are nested in a SKIP-portion of an if-block.
                         states[-1] = (SKIP, 0, 0)
-                    elif _evaluate(expr, defines):
-                        states[-1] = (EMIT, 1, 0)
                     else:
-                        states[-1] = (SKIP, 0, 0)
+                        bol = _evaluate(expr, defines)
+                        if bol:
+                            states[-1] = (EMIT, 1, 0)
+                        else:
+                            states[-1] = (SKIP, 0, 0)
                 except IndexError:
                     raise PreprocessError("#elif stmt without leading #if "\
                                           "stmt", defines['__FILE__'],
@@ -626,59 +409,15 @@ def preprocess(infile, outfile=sys.stdout, defines={},
     elif len(states) < 1:
         raise PreprocessError("superfluous #endif on or before this line",
                               defines['__FILE__'], defines['__LINE__'])
-
     if fout != outfile:
         fout.close()
-
+    
     return defines
 
 
 #---- content-type handling
 
 _gDefaultContentTypes = """
-    # Default file types understood by "preprocess.py".
-    #
-    # Format is an extension of 'mime.types' file syntax.
-    #   - '#' indicates a comment to the end of the line.
-    #   - a line is:
-    #       <filetype> [<pattern>...]
-    #     where,
-    #       <filetype>'s are equivalent in spirit to the names used in the Windows
-    #           registry in HKCR, but some of those names suck or are inconsistent;
-    #           and
-    #       <pattern> is a suffix (pattern starts with a '.'), a regular expression
-    #           (pattern is enclosed in '/' characters), a full filename (anything
-    #           else).
-    #
-    # Notes on case-sensitivity:
-    #
-    # A suffix pattern is case-insensitive on Windows and case-sensitive
-    # elsewhere.  A filename pattern is case-sensitive everywhere. A regex
-    # pattern's case-sensitivity is defined by the regex. This means it is by
-    # default case-sensitive, but this can be changed using Python's inline
-    # regex option syntax. E.g.:
-    #         Makefile            /^(?i)makefile.*$/   # case-INsensitive regex
-
-    Python              .py
-    Python              .pyw
-    Perl                .pl
-    Ruby                .rb
-    Tcl                 .tcl
-    XML                 .xml
-    XML                 .kpf
-    XML                 .xul
-    XML                 .rdf
-    XML                 .xslt
-    XML                 .xsl
-    XML                 .wxs
-    XML                 .wxi
-    HTML                .htm
-    HTML                .html
-    XML                 .xhtml
-    Makefile            /^[Mm]akefile.*$/
-    PHP                 .php
-    JavaScript          .js
-    CSS                 .css
     C++                 .c       # C++ because then we can use //-style comments
     C++                 .cpp
     C++                 .cxx
@@ -687,26 +426,10 @@ _gDefaultContentTypes = """
     C++                 .hpp
     C++                 .hxx
     C++                 .hh
-    IDL                 .idl
-    Text                .txt
-    Fortran             .f
-    Fortran             .f90
-    Shell               .sh
-    Shell               .csh
-    Shell               .ksh
-    Shell               .zsh
-    Java                .java
-    C#                  .cs
-    TeX                 .tex
-
-    # Some Komodo-specific file extensions
-    Python              .ksf  # Fonts & Colors scheme files
-    Text                .kkf  # Keybinding schemes files
 """
 
 class ContentTypesRegistry(object):
     """A class that handles determining the filetype of a given path.
-
     Usage:
         >>> registry = ContentTypesRegistry()
         >>> registry.getContentType("foo.py")
@@ -735,7 +458,6 @@ class ContentTypesRegistry(object):
 
     def _loadContentType(self, content, path=None):
         """Return the registry for the given content.types file.
-
         The registry is three mappings:
             <suffix> -> <content type>
             <regex> -> <content type>
@@ -766,7 +488,6 @@ class ContentTypesRegistry(object):
 
     def getContentType(self, path):
         """Return a content type for the given path.
-
         @param path {str} The path of file for which to guess the
             content type.
         @returns {str|None} Returns None if could not determine the
@@ -811,108 +532,32 @@ def getDefaultContentTypesRegistry():
     return _gDefaultContentTypesRegistry
 
 
-#---- internal support stuff
-#TODO: move other internal stuff down to this section
-
-try:
-    reversed
-except NameError:
-    # 'reversed' added in Python 2.4 (http://www.python.org/doc/2.4/whatsnew/node7.html)
-    def reversed(seq):
-        rseq = list(seq)
-        rseq.reverse()
-        for item in rseq:
-            yield item
-try:
-    sorted
-except NameError:
-    # 'sorted' added in Python 2.4. Note that I'm only implementing enough
-    # of sorted as is used in this module.
-    def sorted(seq, key=None):
-        identity = lambda x: x
-        key_func = (key or identity)
-        sseq = list(seq)
-        sseq.sort(lambda self, other: cmp(key_func(self), key_func(other)))
-        for item in sseq:
-            yield item
-
-
 #---- mainline
 
-def main(argv=None):
-    if argv is None:
-        argv = sys.argv
-    try:
-        optlist, args = getopt.getopt(argv[1:], 'hVvo:D:fkI:sic:',
-            ['help', 'version', 'verbose', 'force', 'keep-lines',
-             'substitute', 'include_substitute', 'content-types-path='])
-    except getopt.GetoptError as msg:
-        sys.stderr.write("preprocess: error: %s. Your invocation was: %s\n"\
-                         % (msg, argv))
-        sys.stderr.write("See 'preprocess --help'.\n")
-        return 1
-    outfile = sys.stdout
+def main():
+    workspace = r"D:\master" #Local directory to define as target input.
     defines = {}
-    force = 0
-    keepLines = 0
-    substitute = 0
-    include_substitute = 0
-    includePath = []
     contentTypesPaths = []
-    for opt, optarg in optlist:
-        if opt in ('-h', '--help'):
-            sys.stdout.write(__doc__)
-            return 0
-        elif opt in ('-V', '--version'):
-            sys.stdout.write("preprocess %s\n" % __version__)
-            return 0
-        elif opt in ('-v', '--verbose'):
-            log.setLevel(log.DEBUG)
-        elif opt == '-o':
-            outfile = optarg
-        if opt in ('-f', '--force'):
-            force = 1
-        elif opt == '-D':
-            if optarg.find('=') != -1:
-                var, val = optarg.split('=', 1)
+    for r,d,f in os.walk(workspace):
+        for file in f:
+            # Only take .c and .h as target.
+            if file[-2:] in [".c", ".h"]:
+                infile = os.path.join(r,file)
+                # Default output directory is a folder named 'output' under the same root as the workspace folder.
+                outfile = os.path.join(workspace[:workspace.rindex("\\")+1],"output",r[len(workspace)+1:],file)
                 try:
-                    val = int(val)
-                except ValueError:
-                    pass
-            else:
-                var, val = optarg, None
-            defines[var] = val
-        elif opt in ('-k', '--keep-lines'):
-            keepLines = 1
-        elif opt == '-I':
-            includePath.append(optarg)
-        elif opt in ('-s', '--substitute'):
-            substitute = 1
-        elif opt in ('-i', '--include_substitute'):
-            include_substitute = 1
-        elif opt in ('-c', '--content-types-path'):
-            contentTypesPaths.append(optarg)
-
-    if len(args) != 1:
-        sys.stderr.write("preprocess: error: incorrect number of "\
-                         "arguments: argv=%r\n" % argv)
-        return 1
-    else:
-        infile = args[0]
-
-    try:
-        contentTypesRegistry = ContentTypesRegistry(contentTypesPaths)
-        preprocess(infile, outfile, defines, force, keepLines, includePath,
-                   substitute, include_substitute,
-                   contentTypesRegistry=contentTypesRegistry)
-    except PreprocessError as ex:
-        if log.isDebugEnabled():
-            import traceback
-            traceback.print_exc(file=sys.stderr)
-        else:
-            sys.stderr.write("preprocess: error: %s\n" % str(ex))
-        return 1
+                    contentTypesRegistry = ContentTypesRegistry(contentTypesPaths)
+                    preprocess(workspace, infile, outfile, defines, 1,
+                            contentTypesRegistry=contentTypesRegistry)
+                except PreprocessError as ex:
+                    if log.isDebugEnabled():
+                        import traceback
+                        traceback.print_exc(file=sys.stderr)
+                    else:
+                        sys.stderr.write("preprocess: error: %s\n" % str(ex))
+                    return 1
 
 if __name__ == "__main__":
-    __file__ = sys.argv[0]
-    sys.exit( main(sys.argv) )
+    argv = ["preprocessor.py"]
+    __file__ = argv[0]
+    sys.exit( main() )
