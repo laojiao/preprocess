@@ -8,18 +8,12 @@
 # How to use:
 #  Set the variable workplace, and run this file.
 
-from past.builtins import cmp
-from builtins import map
 from builtins import str
 from builtins import range
-from builtins import object
 
 import os
 import sys
-import getopt
-import types
 import re
-import pprint
 
 class PreprocessError(Exception):
     def __init__(self, errmsg, file=None, lineno=None, line=None):
@@ -41,76 +35,10 @@ class PreprocessError(Exception):
         #    s += ": " + self.line
         return s
 
-#---- internal logging facility
-
-class _Logger(object):
-    DEBUG, INFO, WARN, ERROR, CRITICAL = range(5)
-    def __init__(self, name, level=None, streamOrFileName=sys.stderr):
-        self._name = name
-        if level is None:
-            self.level = self.WARN
-        else:
-            self.level = level
-        if type(streamOrFileName) == bytes:
-            self.stream = open(streamOrFileName, 'w')
-            self._opennedStream = 1
-        else:
-            self.stream = streamOrFileName
-            self._opennedStream = 0
-    def __del__(self):
-        if self._opennedStream:
-            self.stream.close()
-    def getLevel(self):
-        return self.level
-    def setLevel(self, level):
-        self.level = level
-    def _getLevelName(self, level):
-        levelNameMap = {
-            self.DEBUG: "DEBUG",
-            self.INFO: "INFO",
-            self.WARN: "WARN",
-            self.ERROR: "ERROR",
-            self.CRITICAL: "CRITICAL",
-        }
-        return levelNameMap[level]
-    def isEnabled(self, level):
-        return level >= self.level
-    def isDebugEnabled(self): return self.isEnabled(self.DEBUG)
-    def isInfoEnabled(self): return self.isEnabled(self.INFO)
-    def isWarnEnabled(self): return self.isEnabled(self.WARN)
-    def isErrorEnabled(self): return self.isEnabled(self.ERROR)
-    def isFatalEnabled(self): return self.isEnabled(self.FATAL)
-    def log(self, level, msg, *args):
-        if level < self.level:
-            return
-        message = "%s: %s: " % (self._name, self._getLevelName(level).lower())
-        message = message + (msg % args) + "\n"
-        self.stream.write(message)
-        self.stream.flush()
-    def debug(self, msg, *args):
-        self.log(self.DEBUG, msg, *args)
-    def info(self, msg, *args):
-        self.log(self.INFO, msg, *args)
-    def warn(self, msg, *args):
-        self.log(self.WARN, msg, *args)
-    def error(self, msg, *args):
-        self.log(self.ERROR, msg, *args)
-    def fatal(self, msg, *args):
-        self.log(self.CRITICAL, msg, *args)
-
-log = _Logger("preprocess", _Logger.WARN)
-#log = _Logger("preprocess", _Logger.DEBUG)
-
-
-
 #---- internal support stuff
 # This function is especially modified to eval directly C language.
 
 def _evaluate(expr, defines):
-    """Evaluate the given expression string with the given context.
-    WARNING: This runs eval() on a user string. This is unsafe.
-    """
-    #interpolated = _interpolate(s, defines)
     expr = expr.replace("||","|") # Replace logic operators.
     expr = expr.replace("&&","&")
     expr = expr.replace("!defined", "ndefined") # Deal with !.
@@ -129,7 +57,6 @@ def _evaluate(expr, defines):
         msg = str(ex)
         print(expr, msg)
         sys.exit()
-    log.debug("evaluate %r -> %s (defines=%r)", expr, rv, defines)
     return rv
 
 
@@ -137,32 +64,11 @@ def _evaluate(expr, defines):
 
 def preprocess(workspace, infile, outfile=sys.stdout, defines={},
                force=0, keepLines=0, includePath=[],
-               substitute=0, include_substitute=0,
-               contentType=None, contentTypesRegistry=None,
-               __preprocessedFiles=None):
+               substitute=0, include_substitute=0):
     if isinstance(infile, tuple):
         infile, from_, to_, last_to_line = infile
     else:
         from_, to_, last_to_line = None, None, None
-
-    if __preprocessedFiles is None:
-        __preprocessedFiles = []
-    log.info("preprocess(infile=%r, outfile=%r, defines=%r, force=%r, "\
-             "keepLines=%r, includePath=%r, contentType=%r, "\
-             "__preprocessedFiles=%r)", infile, outfile, defines, force,
-             keepLines, includePath, contentType, __preprocessedFiles)
-    absInfile = os.path.normpath(os.path.abspath(infile))
-    if absInfile in __preprocessedFiles:
-        pass
-        # Allow the same file to be included multiple times, it is not
-        # necessarily recursive include!
-        #raise PreprocessError("detected recursive #include of '%s'"\
-        #                      % infile)
-    __preprocessedFiles.append(os.path.abspath(infile))
-
-    # Determine the content type and comment info for the input file.
-    if contentType is None:
-        contentType = "C++"
 
     # Patterns are modified to fit my own use.
     # No need for comment patterns according to file type so removed.
@@ -215,7 +121,6 @@ def preprocess(workspace, infile, outfile=sys.stdout, defines={},
     lineNum = 0
     for line in lines:
         lineNum += 1
-        log.debug("line %d: %r", lineNum, line)
         defines['__LINE__'] = lineNum
 
         # Get rid of the 'u' after numbers meaning unsigned.
@@ -236,7 +141,6 @@ def preprocess(workspace, infile, outfile=sys.stdout, defines={},
 
         if match:
             op = match.group("op")
-            log.debug("%r stmt (states: %r)", op, states)
             if op == "define":
                 if not (states and states[-1][0] == SKIP):
                     var, val = match.group("var", "val")
@@ -254,6 +158,7 @@ def preprocess(workspace, infile, outfile=sys.stdout, defines={},
                             defines[var] = eval(val) # Deal with value that still need calculation or hex numbers.(exp. #define VAR 2*2 or #define VAR 0x01)
                         except:
                             defines[var] = val
+                fout.write(line) # Keep define lines
             elif op == "undef":
                 if not (states and states[-1][0] == SKIP):
                     var = match.group("var")
@@ -303,9 +208,8 @@ def preprocess(workspace, infile, outfile=sys.stdout, defines={},
                         fname = (fname, from_, to_, last_to_line)
                     defines = preprocess(workspace, fname, fout, defines, force,
                                          keepLines, includePath,
-                                         substitute, include_substitute,
-                                         contentTypesRegistry=contentTypesRegistry,
-                                         __preprocessedFiles=__preprocessedFiles)
+                                         substitute, include_substitute)
+                fout.write(line) # Keep define lines
             elif op in ("if", "ifdef", "ifndef"):
                 if op == "if":
                     expr = match.group("expr")
@@ -378,16 +282,11 @@ def preprocess(workspace, infile, outfile=sys.stdout, defines={},
                     error = match.group("error")
                     raise PreprocessError("#error: "+error, defines['__FILE__'],
                                           defines['__LINE__'], line)
-            log.debug("states: %r", states)
             if keepLines:
                 fout.write("\n")
         else:
             try:
                 if states[-1][0] == EMIT:
-                    log.debug("emit line (%s)" % states[-1][1])
-                    # Substitute all defines into line.
-                    # XXX Should avoid recursive substitutions. But that
-                    #     would be a pain right now.
                     sline = line
                     if substitute:
                         for name in reversed(sorted(defines, key=len)):
@@ -395,10 +294,7 @@ def preprocess(workspace, infile, outfile=sys.stdout, defines={},
                             sline = sline.replace(name, str(value))
                     fout.write(sline)
                 elif keepLines:
-                    log.debug("keep blank line (%s)" % states[-1][1])
                     fout.write("\n")
-                else:
-                    log.debug("skip line (%s)" % states[-1][1])
             except IndexError:
                 raise PreprocessError("superfluous #endif before this line",
                                       defines['__FILE__'],
@@ -415,129 +311,11 @@ def preprocess(workspace, infile, outfile=sys.stdout, defines={},
     return defines
 
 
-#---- content-type handling
-
-_gDefaultContentTypes = """
-    C++                 .c       # C++ because then we can use //-style comments
-    C++                 .cpp
-    C++                 .cxx
-    C++                 .cc
-    C++                 .h
-    C++                 .hpp
-    C++                 .hxx
-    C++                 .hh
-"""
-
-class ContentTypesRegistry(object):
-    """A class that handles determining the filetype of a given path.
-    Usage:
-        >>> registry = ContentTypesRegistry()
-        >>> registry.getContentType("foo.py")
-        "Python"
-    """
-
-    def __init__(self, contentTypesPaths=None):
-        self.contentTypesPaths = contentTypesPaths
-        self._load()
-
-    def _load(self):
-        from os.path import dirname, join, exists
-
-        self.suffixMap = {}
-        self.regexMap = {}
-        self.filenameMap = {}
-
-        self._loadContentType(_gDefaultContentTypes)
-        localContentTypesPath = join(dirname(__file__), "content.types")
-        if exists(localContentTypesPath):
-            log.debug("load content types file: `%r'" % localContentTypesPath)
-            self._loadContentType(open(localContentTypesPath, 'r').read())
-        for path in (self.contentTypesPaths or []):
-            log.debug("load content types file: `%r'" % path)
-            self._loadContentType(open(path, 'r').read())
-
-    def _loadContentType(self, content, path=None):
-        """Return the registry for the given content.types file.
-        The registry is three mappings:
-            <suffix> -> <content type>
-            <regex> -> <content type>
-            <filename> -> <content type>
-        """
-        for line in content.splitlines(0):
-            words = line.strip().split()
-            for i in range(len(words)):
-                if words[i][0] == '#':
-                    del words[i:]
-                    break
-            if not words: continue
-            contentType, patterns = words[0], words[1:]
-            if not patterns:
-                if line[-1] == '\n': line = line[:-1]
-                raise PreprocessError("bogus content.types line, there must "\
-                                      "be one or more patterns: '%s'" % line)
-            for pattern in patterns:
-                if pattern.startswith('.'):
-                    if sys.platform.startswith("win"):
-                        # Suffix patterns are case-insensitive on Windows.
-                        pattern = pattern.lower()
-                    self.suffixMap[pattern] = contentType
-                elif pattern.startswith('/') and pattern.endswith('/'):
-                    self.regexMap[re.compile(pattern[1:-1])] = contentType
-                else:
-                    self.filenameMap[pattern] = contentType
-
-    def getContentType(self, path):
-        """Return a content type for the given path.
-        @param path {str} The path of file for which to guess the
-            content type.
-        @returns {str|None} Returns None if could not determine the
-            content type.
-        """
-        basename = os.path.basename(path)
-        contentType = None
-        # Try to determine from the path.
-        if not contentType and basename in self.filenameMap:
-            contentType = self.filenameMap[basename]
-            log.debug("Content type of '%s' is '%s' (determined from full "\
-                      "path).", path, contentType)
-        # Try to determine from the suffix.
-        if not contentType and '.' in basename:
-            suffix = "." + basename.split(".")[-1]
-            if sys.platform.startswith("win"):
-                # Suffix patterns are case-insensitive on Windows.
-                suffix = suffix.lower()
-            if suffix in self.suffixMap:
-                contentType = self.suffixMap[suffix]
-                log.debug("Content type of '%s' is '%s' (determined from "\
-                          "suffix '%s').", path, contentType, suffix)
-        # Try to determine from the registered set of regex patterns.
-        if not contentType:
-            for regex, ctype in self.regexMap.items():
-                if regex.search(basename):
-                    contentType = ctype
-                    log.debug("Content type of '%s' is '%s' (matches regex '%s')",
-                              path, contentType, regex.pattern)
-                    break
-        # Try to determine from the file contents.
-        content = open(path, 'rb').read()
-        if content.startswith(b"<?xml"):  # cheap XML sniffing
-            contentType = "XML"
-        return contentType
-
-_gDefaultContentTypesRegistry = None
-def getDefaultContentTypesRegistry():
-    global _gDefaultContentTypesRegistry
-    if _gDefaultContentTypesRegistry is None:
-        _gDefaultContentTypesRegistry = ContentTypesRegistry()
-    return _gDefaultContentTypesRegistry
-
-
 #---- mainline
 
 def main():
     workspace = r"D:\master" #Local directory to define as target input.
     defines = {}
-    contentTypesPaths = []
     for r,d,f in os.walk(workspace):
         for file in f:
             # Only take .c and .h as target.
@@ -545,19 +323,8 @@ def main():
                 infile = os.path.join(r,file)
                 # Default output directory is a folder named 'output' under the same root as the workspace folder.
                 outfile = os.path.join(workspace[:workspace.rindex("\\")+1],"output",r[len(workspace)+1:],file)
-                try:
-                    contentTypesRegistry = ContentTypesRegistry(contentTypesPaths)
-                    preprocess(workspace, infile, outfile, defines, 1,
-                            contentTypesRegistry=contentTypesRegistry)
-                except PreprocessError as ex:
-                    if log.isDebugEnabled():
-                        import traceback
-                        traceback.print_exc(file=sys.stderr)
-                    else:
-                        sys.stderr.write("preprocess: error: %s\n" % str(ex))
-                    return 1
+                preprocess(workspace, infile, outfile, defines, 1)
+
 
 if __name__ == "__main__":
-    argv = ["preprocessor.py"]
-    __file__ = argv[0]
     sys.exit( main() )
